@@ -1,0 +1,211 @@
+---
+title: 'Statistical Methods for Discrete Response, Time Series, and Panel Data (W271):
+  Lab 3'
+author: "Eugene Tang, Yang Jing, and Aris Fotkatzikis"
+geometry: margin=1in
+output:
+  pdf_document:
+    latex_engine: xelatex
+  number_sections: yes
+  html_document: default
+  toc: yes
+fontsize: 11pt
+---
+
+# Question 1: Forecasting using a Seasonal ARIMA model
+
+## Introduction
+The dataset is from the Federal Reserve Economic Data (FRED) site of the Federal Reserve Bank of St. Louis. It contains not-seasonally adjusted quarterly data of e-commerce retail sales as a percent of total sales. 
+
+In the sections bellow we will import the data, conduct an EDA of the raw data and an EDA after we convert it to a time-series, and we will build a model in order to forecast future E-commerce sales percentages.
+
+## Data import and EDA
+```{r, message=FALSE, warning=FALSE}
+# Insert the function to *tidy up* the code when they are printed out
+library(knitr)
+opts_chunk$set(tidy.opts=list(width.cutoff=60),tidy=TRUE)
+# Load required libraries
+library(car)
+library(dplyr)
+library(Hmisc)
+library(ggplot2)
+library(astsa)
+library(forecast)
+library(fpp2)
+library(xts)
+library(tseries)
+```
+
+```{r, fig.width = 6, fig.height= 3}
+ecom <- read.csv(file = "ECOMPCTNSA.csv")
+typeof(ecom)
+summary(ecom)
+str(ecom)
+hist(ecom$ECOMPCTNSA, main = "Histogram of ecommerce as % of retail sales", xlab = "Ecommerce %")
+cbind(head(ecom), tail(ecom))
+
+```
+As we can see, our data is comprised of 69 rows of 2 variables: DATE and ECOMPCTNSA. The DATE column contains dates from Oct 01, 1999 to Oct 01, 2016. The data type of DATE is factor so this data is not recognized as time data yet. The ECOMPCTNSA data is numeric, with a range of 0.7 - 9.5 and represent e-commerce percentage of total retail sales. A histogram of the ECOMPCTNSA data shows that the data is positively skewed. There is no missing data and nothing seems out of place.
+
+## Convert into a time-series object
+```{r, fig.width = 6, fig.height= 3}
+ecom.ts.a <-ts(ecom$ECOMPCTNSA, frequency = 4, start = c(1999, 4))
+
+head(ecom.ts.a)
+tail(ecom.ts.a)
+summary(ecom.ts.a)
+```
+
+We successfully converted the data into a time-series object with the correct start and end date. The original data set included the day, specifically the 1st day of Jan, April, July, and October, to report quarterly data. However, we have lost that granularity in our new dataset. For the purpose of this report this is not an issue, since we will create quarterly forecasts.
+
+
+## Train - test data split
+We split the data in a train set and a test set. The train set includes data from Q4, 1999 to Q4, 2014. The test set includes data from Q1 2015 to Q4 2016. For 2017 forecasts we will use all available data.
+```{r}
+# Data split
+train.set <- window(ecom.ts.a, c(1999,4), c(2014,4) )
+test.set <- window(ecom.ts.a, c(2015,1), c(2016,4) )
+```
+
+## Time-series EDA
+
+Let's perform time series EDA. We will do the EDA on the entire series. We could restrict the EDA only on the train set we defined above but we choose not to do so for the following two reasons:
+1) Eventually we will use the entire series to forecast for 2017 (unseen data). Complete series EDA then becomes a necessity
+2) We assume that whatever pattern  governs the data for 1999-2015, coninues for the rest of the series. A quick glance at the time series plot we created a little earlier shows that this is a logical assumption.
+
+We will not repeat the histogram of the data since we already examined it earlier and doing so will convey no new information. We also decided not to decompose the series (either using the "decompose" function, which determines the trend using a moving average, or  the "stl" function, which uses loess smoothing to find the seasonal componen), since we can establish trend and seasonality from the excisting EDA. 
+
+Let's plot the series:
+```{r}
+plot(ecom.ts.a, type = "o", pch = 20, bg = par("bg"), col = "blue", main = " E-commerce sales as percentage of total retail sales", ylab = "Ecommerce percentage")
+rect(xleft = 2001, xright = 2002, ybottom = 0.75, ytop = 1.5, col = "black", density = 0)
+rect(xleft = 2008, xright = 2009.5, ybottom = 3, ytop = 4.5, col = "black", density = 0)
+```
+
+It is clear that E-commerce sales has been steadily growing since 2000. The dataset is not stationary in the mean and it shows a clear pattern of seasonality. Seasonality also becomes more pronounced in later years than early 2000s. This is in line with expectation as more people switch to E-commerce giants such as Amazon for daily and holiday shopping. The two rectangles in the graph mark the two most recent recessions. A dip in Q4 2008 sales is rather apparent. This is expected since people cut discretionary spending during recessions and we expect more discretionary spending directed towards online retailers. 
+
+```{r, fig.width = 6, fig.height= 3}
+yr.08 <- ts(ecom.ts.a[34:37]) 
+yr.12 <- ts(ecom.ts.a[50:53]) 
+yr.15 <- ts(ecom.ts.a[62:65])
+
+#par(mfrow = c(2,1))
+boxplot(ecom.ts.a ~ cycle(ecom.ts.a), main="Ecommerce pct per FY quarter  ", xlab = "Financial Year Quarter", ylab = " Percentage")
+
+plot(cbind(yr.08, yr.12, yr.15), main = "Ecommerce pct per quarter for select years", xlab = "Financial Year Quarter")
+```
+
+As we can see both from the entire series boxplot, Q4 has always higher percentage of ecommerce sales, followed by Q1. Q2 and Q3 are rather close to each other. These results match our intuition since Q4 includes the busiest shopping days of the year. The seasonality of the data is clearly seen also when plotting ecommerce % for a few select years.
+
+We now plot the ACF and PACF.
+```{r, fig.width = 6, fig.height= 3}
+ecom.ts.a %>%
+  ggtsdisplay(lag.max = 68)
+
+adf.test(ecom.ts.a)
+```
+ACF: strong trend and seasonality of the series is apparent in the slowly decaying sinusoidal ACF plot.
+
+PACF: PACF shows a negative spike at lag 5, and although the spikes at lag 9 and 13 are below the significance level, the way they decay provides a hint of the series seasonality. The PACF cuts off after lag 1, with the exception of a spike in lag 5. Also, lags 2-4 are close to the cutoff. The PACF spike at lag 5 indicates seasonality
+
+The Augmented Dickey-Fuller shows that our original time series is non-stationary as expected.
+
+Since our data is not stationary, we will transform it. We tried:
+1. Various lag differencing
+2. 2nd order differencing
+3. Differencing after a log transformation
+
+Due to page limitation, here is the conclusion:
+1. Differencing on lag 1 and lag 4 seem to have successfully removed trend but the resulting series has increasing volatility with time.
+2. 2nd Order differencing is succesful in de-trending the series but has increased volatility over time
+3. Differencing after a log transformation also seem successful in removing the trend and keeps variance stable
+
+By combining #1 and #3, we can successfully removed trend and time series looks stationary (constant mean and variance), so we choose this transformation for our data.
+```{r, fig.width = 6, fig.height= 3}
+summary(diff(diff(log(ecom.ts.a)),lag = 4))
+log(ecom.ts.a) %>% diff(lag=1) %>% diff(lag=4) %>%ggtsdisplay()
+adf.test(diff(diff(log(ecom.ts.a)), lag = 4))
+```
+We note a significant peak at lag 4 in the ACF and PACF, indicating we could have a MA(1) seasonal component. Looking at the ACF and PACF, there looks like there is no non-seasonal autocorrelations.
+
+## Baseline model
+
+Based on EDA, we begin with an ARIMA(0,1,0)(0,1,1)[4]. 
+```{r, fig.width = 6, fig.height= 3}
+fit.1 <-Arima(log(train.set), order = c(0, 1, 0), seasonal = list(order = c(0,1,1), 4), method = "ML")
+
+summary(fit.1)
+
+par(mfrow = c(1,3))
+qqnorm(fit.1$residuals)
+qqline(fit.1$residuals)
+scatter.smooth(fit.1$residuals, fitted(fit.1))
+
+#in sample performance
+plot(log(train.set))
+lines(fitted.values(fit.1), col = "red")
+
+checkresiduals(fit.1, lag.max = 68)
+```
+In sample model performance: 
+QQ plots suggest that error term doesn't have normality and error term plot looks positively skewed. ACF and PACF suggest error term is just white noise. AIC is -201.54. Fitted value overlap actual fairly well.
+
+```{r, fig.width = 6, fig.height= 3}
+#out of sample performance
+fcast.outofsample <- forecast(fit.1, h=8)
+plot(fcast.outofsample)
+lines(log(test.set))
+```
+Out of sample performance:
+We use the trained model to predict 2015-2016 results. Actual overlaps with predicted values fairly closely at Q1 and Q3 but not Q2 or Q4. 
+
+We now fine tune the MA and AR components of the non-seasonal and  seasonal part of our model. We have over a decade worth of data but we want to avoid overfitting, so we limited our iteration between 0 and 2 period. We use AIC as our metric to make model selection. BIC and AICc are included for reference but are not determine factors. 
+```{r}
+mod.select <- function(p,q, P, Q) {
+  Arima(log(train.set), order = c(p, 1, q), seasonal = list(order = c(P, 1, Q), 4), method="ML")}
+
+results <- list()
+for (p in 0:2) for (q in 0:2) for (P in 0:2) for (Q in 0:2) {
+  {output <- c(p, q, P, Q, mod.select(p, q, P, Q)$aic, mod.select(p, q, P, Q)$aicc, mod.select(p, q, P, Q)$bic)}
+  results <- c(results, as.data.frame(output))}
+df <-as.data.frame(do.call(rbind, unname(results)))
+colnames(df)<-c("p", "q", "P", "Q", "AIC", "AICc", "BIC")
+```
+
+```{r}
+df[order(df$AIC)[1:3],]
+df[order(df$AICc)[1:3],]
+df[order(df$BIC)[1:3],]
+```
+Based on top AIC results, Arima(0,1,0)(0,1,2)[4] is our final model with AICc -207.22.
+
+Final model is fitted using all data available. 
+```{r, fig.width = 6, fig.height= 3}
+fit.final <- Arima(log(ecom.ts.a), order = c(0, 1, 0), seasonal = list(order = c(0,1,2), 4), method = "ML")
+fit.final$residuals %>%
+  ggtsdisplay(lag.max = 68)
+summary(fit.final)
+
+par(mfrow = c(1,4))
+plot(fit.final)
+qqnorm(fit.final$residuals)
+qqline(fit.final$residuals)
+scatter.smooth(fit.final$residuals, fitted(fit.final))
+
+#Box-Ljung test to confirm the ACF and PACF have no significant correlations
+Box.test(fit.final$residuals, type = "Ljung-Box")
+
+plot(log(ecom.ts.a))
+lines(fitted.values(fit.1), col = "red")
+lines(fitted.values(fit.final), col = "blue")
+```
+ACF and PACF suggest that the model residual is just white noise. p-value is 0.1952 so we fail to reject the null. QQ plots still show non normality of the error term. Fitted values overlap with actual values fairly well. 
+
+Forecast
+```{r, fig.width = 6, fig.height= 3}
+fcast <- forecast(fit.final, h=10)
+plot(fcast)
+```
+Conclusion:
+
+The dataset is E-commerce sale % of total retail sales. We started with an EDA on raw data and converted it to time series data. We noticed trend and seasonality in the data series. We successfully removed trend and seasonality by differencing both lag 1 and lag 4. By examining ACF and PACF plots, we decided to model it as seasonal MA process. The final model is ARIMA(0,1,0)(0,1,2)[4] fitted on data from 1999 to 2016. We forecasted 2017 quarterly results using the final model. 
